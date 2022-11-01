@@ -12,6 +12,12 @@ const renderer = createRenderer({
 	insert(el,parent,anchor = null){
 		parent.insertBefore(el,anchor)
 	},
+	createText(text){
+		return document.createTextNode(text)
+	},
+	setText(el,text){
+		el.nodeValue = text
+	},
 	//将属性设置相关操作封装到patchProps函数中，并作为渲染器选项传递
 	patchProps(el,key,prevValue,nextValue){
 		if(/^on/.test(key)){
@@ -120,10 +126,28 @@ function createRenderer(options){
 			}else{
 				patchElement(n1,n2)
 			}
-		}else if(typeof type === 'object'){
-			//如果n2.type的值的类型是对象，则它描述的是组件
-		}else if(type === 'xxx'){
-			//处理其他类型的vnode
+		}else if(type === Text){//如果新vnode的类型是Text,则说明该vnode描述的是文本节点
+			//如果没有旧节点，则进行挂载
+			if(!n1){
+				//调用createText函数创建文本节点
+				const el = n2.el = createText(n2.children)
+				//将文本节点插入容器
+				insert(el,container)
+			}else{
+				//如果旧vnode存在，只需要使用新文本节点的文本内容更新旧文本节点即可
+				const el = n2.el = n1.el
+				if(n2.children !== n1.children){
+					//调用setTetxt函数更新文本节点的内容
+					setText(el,n2.children)
+			}
+		}else if(type === Fragment){//处理Fragment类型的vnode
+			if(!n1){
+				//如果旧vnode不存在,则只需要将Fragment的children逐个挂载即可
+				n2.children.forEach(c => patch(null,c,container))
+			}else{
+				//如果旧vnode存在，则只需要更新Fragment的children即可
+				patchChildren(n1,n2,container)
+			}
 		}
 	}
 	function render(vnode,container){
@@ -140,6 +164,11 @@ function createRenderer(options){
 		container._vnode = vnode
 	}
 	function unmount(vnode){
+		//在卸载时，如果卸载的vnode类型为Fragment,则只需要卸载其children
+		if(vnode.type === Fragment){
+			vnode.children.forEach(c => unmount(c))
+			return
+		}
 		//获取el的父元素
 		const parent = vnode.el.parentNode
 		//调用removeChild移除元素
@@ -162,6 +191,43 @@ function createRenderer(options){
 		}
 		//第二步：更新children
 		patchChildren(n1,n2,el)
+	}
+	function patchChildren(n1,n2,container){
+		//判断新子节点的类型是否是文本节点
+		if(typeof n2.children === 'string'){
+			//旧子节点的类型有三种可能：没有子节点、文本子节点以及一组子节点
+			//只有当旧子节点为一组子节点时，才要逐个卸载，其他情况什么都不需要做
+			if(Array.isArray(n1.children)){
+				n1.children.forEach((c) => unmount(c))
+			}
+			//最后将新的文本节点内容设置给容器元素
+			setElementText(container,n2.children)
+		}else if(Array.isArray(n2.children)){
+			//说明新子节点时一组子节点
+			//判断旧子节点是否也是一组子节点
+			if(Array.isArray(n1.children)){
+				//将旧的一组子节点全部卸载
+				n1.children.forEach(c => unmount(c))
+				//再将新的一组子节点全部挂载都容器中
+				n2.children.forEach(c => patch(null,c,container))
+			}else{
+				//此时：
+				//旧子节点要么是文本子节点，要么不存在
+				//但无论那种情况，我们都只需要将容器清空，然后将新的一组子节点逐个挂载
+				setElementText(container,'')
+				n2.children.forEach(c=>patch(null,c,container))
+			}
+		}else{
+			//代码运行到这里，说明新子节点不存在
+			//旧子节点是一组子节点，秩序逐个卸载即可
+			if(Array.isArray(n1.children)){
+				n1.children.forEach(c => unmount(c))
+			}else if(typeof n1.children === 'string'){
+				//旧子节点是文本子节点，清空内容即可
+				setElementText(container,'')
+			}
+			//如果也没有子节点，那么什么也不做
+		}
 	}
 	return {
 		render
