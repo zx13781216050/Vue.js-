@@ -204,66 +204,8 @@ function createRenderer(options){
 			//最后将新的文本节点内容设置给容器元素
 			setElementText(container,n2.children)
 		}else if(Array.isArray(n2.children)){
-			//重新实现两组子节点的更新方式
-			//新旧children
-			const oldChildren = c1.children
-			const newChildren = c2.children
-			//用来存储寻找过程中遇到的最大索引值
-			let lastIndex = 0
-			//遍历新的children
-			for(let i =0;i<newChildren.length;i++){
-				const newVNode = newChildren[i]
-				//在第一层循环中定义变量find,代表是否在旧的一组子节点中找到可复用的节点
-				//初始值为false,代表没找到
-				let find = false
-				//遍历旧的children
-				for(let j = 0;j<oldChildren.length;j++){
-					const oldVNode = oldChildren[j]
-					//如果找到了具有相同key值的两个节点，说明可以复用，但仍然需要调用patch函数更新
-					if(newVNode.key === oldVNode.key){
-						//一旦找到可复用的节点，则将变量find的值设为true
-						find = true
-						patch(oldVNode,newVNode,container)
-						if(j < lastIndex){
-							//代码运行到这，说明newVnode对应的真实DOM需要移动
-							//现货区newVnode的前一个vnode,即prevVNode
-							const prevVNode = newChildren[i - 1]
-							//如果prevVNode不存在，则说明当前newVNode是第一各节点，它不需要移动
-							if(prevVNode){
-								//由于我们要将newVNode对应的真实DOM移动到prevVNode所对应真实DOM后面，
-								//所以我们需要获取prevVNode所对应真实DOM的下一个兄弟节点，并将其作为抹锚点
-								const anchor = prevVNode.l.nextSibling
-								//调用insert方法将newVNode对应的真实DOM插入到锚点元素前面
-								//也就是prevNode对应真实DOM的后面
-								insert(newVNode.el,container,anchor)
-							}
-						}else{
-							//如果当前找到的节点再旧children中的索引不小于最大索引值，
-							//则更新lastIndex的值
-							lastIndex = j
-						}
-						break //这里需要break
-					}
-				}
-				//如果运行到这，find仍然为false，
-				//说明当前newNode没有在旧的一组子节点找到可复用的节点
-				//也就是说，当前newNode是新增节点，需要挂载
-				if(!find){
-					//为了将节点挂载到正确位置，我们需要先获取锚点元素
-					const prevVNode = newChildren[i-1]
-					let anchor = null
-					if(prevVNode){
-						//如果有前一个vnode节点则使用它的下一个兄弟节点作为锚点元素
-						anchor = prevVNode.el.nextSibling
-					}else{
-						//如果没有前一个vnode节点，说明即将挂载的新节点是第一个子节点
-						//这时我们使用容器元素的firstChild作为锚点
-						anchor = container.firstChild
-					}
-					//挂载newVNode
-					patch(null,newVNode,container,anchor)
-				}
-			}	
+			//封装patchKeyedChildren函数处理两组子节点
+			patchKeyedChildren(n1,n2,container)
 		}else{
 			//代码运行到这里，说明新子节点不存在
 			//旧子节点是一组子节点，秩序逐个卸载即可
@@ -274,6 +216,64 @@ function createRenderer(options){
 				setElementText(container,'')
 			}
 			//如果也没有子节点，那么什么也不做
+		}
+	}
+	function patchKeyedChildren(n1,n2,container){
+		const oldChildren = n1.children
+		const newChildren = n2.children
+		//四个索引值
+		let oldStartIdx = 0
+		let oldEndIdx = oldChildren.length - 1
+		let newStartIdx = 0
+		let newEndIdx = newChildren.length - 1
+		//四个索引指向的vnode节点
+		let oldStartVNode = oldChildren[oldStartIdx]
+		let oldEndVNode = oldChildren[oldEndIdx]
+		let newStarVNode = newChildren[newStartIdx]
+		let newEndVNode = newChildren[newEndIdx]
+		while(oldStartIdx <= oldEndIdx && newStartIdx <= newEndIdx){
+			if(oldStartVNode.key === newStartVNode.key){
+				//步骤一：oldStartVNode和newStartVNode比较
+				//调用patch函数在oldStartVNode和newStartVNode之间打补丁
+				patch(oldStartVNode,newStartVNode,container)
+				//更新相关索引，指向下一个位置
+				oldStartVNode = oldChildren[++oldStartIdx]
+				newStartVNode = newChildren[++newStartIdx]
+			}else if(oldEndVNode.key === newEndVNode.key){
+				//步骤二：oldEndVNode和newEndVNode比较
+				//节点在新的顺序中仍然处于尾部，不需要移动，但仍需打补丁
+				patch(oldEndVNode,newEndVNode,container)
+				//更新索引和头尾部节点变动
+				oldEndVNode = oldChildren[--oldEndIdx]
+				newEndVNode = newChildren[--newEndIdx]
+			}else if(oldStartVNode.key === newEndVNode.key){
+				//步骤三：oldStartVNode和newEndVNode比较
+				//调用patch函数在oldStartVNode和newEndVNode之间打补丁
+				patch(oldStartVNode,newEndVNode,container)
+				//将旧的一组子节点的头部节点对应的真实DOM节点oldStartVNod.el移动到
+				//旧的一组子节点的尾部节点对应的真实DOM节点后面
+				insert(oldStartVNode.el,container,oldEndVNode.el.nextSibling)
+				//更新相关索引到下一个位置
+				oldStartVNode = oldChildren[++oldStartIdx]
+				newEndVNode = newChildren[--newEndIdx]
+			}else if(oldEndVNode.key === newStartVNode.key){
+				//步骤四：oldEndVNode和newStartVNode比较
+				//仍然需要调用patch函数进行打补丁
+				patch(oldEndVNode,newStartVNode,container)
+				//移动DOM操作
+				//oldEndVNode.el移动到oldStartVNode.el前面
+				insert(oldEndVNode.el,container,oldStartVNode.el)
+
+				//移动DOM完成后，更新索引值，并指向下一个位置
+				oldEndVNode = oldChildren[--oldEndIdx]
+				newStartVNode = newChildren[++newStartIdx]
+			}else{
+				//遍历旧的一组子节点、试图寻找与newStartVNode拥有相同key值的节点
+				//idxInOld就是新的一组子节点的头部节点在旧的一组子节点中的索引
+				const idxInOld = oldChildren.findIndex(
+					node => node.key === newStartVNode.key
+				)
+			}
 		}
 	}
 	return {
