@@ -86,7 +86,7 @@ function createRenderer(options){
 	//通过options督导操作DOM的API
 	const{ createElement,insert,setElementText,patchProps} = options
 
-	function mountElement(vnode,container){
+	function mountElement(vnode,container,anchor){
 		//调用createElement函数创建元素
 		//让vnode.el引用真实DOM元素
 		const el = vnode.el = createElement(vnode.type)
@@ -108,7 +108,7 @@ function createRenderer(options){
 			}
 		}
 		//调用insert函数将元素插入到容器内
-		insert(el,container)
+		insert(el,container,anchor)
 	}
 	function patch(n1,n2,container){
 		//如果n1存在，则对比n1和n2的类型
@@ -122,7 +122,8 @@ function createRenderer(options){
 		//如果n2.type的值是字符串，则它描述的是普通标签元素
 		if(typeof type === 'string'){
 			if(!n1){
-				mountElement(n2,container)
+				//挂载时将锚点元素作为第三个参数传递给mountElement函数
+				mountElement(n2,container,anchor)
 			}else{
 				patchElement(n1,n2)
 			}
@@ -203,20 +204,66 @@ function createRenderer(options){
 			//最后将新的文本节点内容设置给容器元素
 			setElementText(container,n2.children)
 		}else if(Array.isArray(n2.children)){
-			//说明新子节点时一组子节点
-			//判断旧子节点是否也是一组子节点
-			if(Array.isArray(n1.children)){
-				//将旧的一组子节点全部卸载
-				n1.children.forEach(c => unmount(c))
-				//再将新的一组子节点全部挂载都容器中
-				n2.children.forEach(c => patch(null,c,container))
-			}else{
-				//此时：
-				//旧子节点要么是文本子节点，要么不存在
-				//但无论那种情况，我们都只需要将容器清空，然后将新的一组子节点逐个挂载
-				setElementText(container,'')
-				n2.children.forEach(c=>patch(null,c,container))
-			}
+			//重新实现两组子节点的更新方式
+			//新旧children
+			const oldChildren = c1.children
+			const newChildren = c2.children
+			//用来存储寻找过程中遇到的最大索引值
+			let lastIndex = 0
+			//遍历新的children
+			for(let i =0;i<newChildren.length;i++){
+				const newVNode = newChildren[i]
+				//在第一层循环中定义变量find,代表是否在旧的一组子节点中找到可复用的节点
+				//初始值为false,代表没找到
+				let find = false
+				//遍历旧的children
+				for(let j = 0;j<oldChildren.length;j++){
+					const oldVNode = oldChildren[j]
+					//如果找到了具有相同key值的两个节点，说明可以复用，但仍然需要调用patch函数更新
+					if(newVNode.key === oldVNode.key){
+						//一旦找到可复用的节点，则将变量find的值设为true
+						find = true
+						patch(oldVNode,newVNode,container)
+						if(j < lastIndex){
+							//代码运行到这，说明newVnode对应的真实DOM需要移动
+							//现货区newVnode的前一个vnode,即prevVNode
+							const prevVNode = newChildren[i - 1]
+							//如果prevVNode不存在，则说明当前newVNode是第一各节点，它不需要移动
+							if(prevVNode){
+								//由于我们要将newVNode对应的真实DOM移动到prevVNode所对应真实DOM后面，
+								//所以我们需要获取prevVNode所对应真实DOM的下一个兄弟节点，并将其作为抹锚点
+								const anchor = prevVNode.l.nextSibling
+								//调用insert方法将newVNode对应的真实DOM插入到锚点元素前面
+								//也就是prevNode对应真实DOM的后面
+								insert(newVNode.el,container,anchor)
+							}
+						}else{
+							//如果当前找到的节点再旧children中的索引不小于最大索引值，
+							//则更新lastIndex的值
+							lastIndex = j
+						}
+						break //这里需要break
+					}
+				}
+				//如果运行到这，find仍然为false，
+				//说明当前newNode没有在旧的一组子节点找到可复用的节点
+				//也就是说，当前newNode是新增节点，需要挂载
+				if(!find){
+					//为了将节点挂载到正确位置，我们需要先获取锚点元素
+					const prevVNode = newChildren[i-1]
+					let anchor = null
+					if(prevVNode){
+						//如果有前一个vnode节点则使用它的下一个兄弟节点作为锚点元素
+						anchor = prevVNode.el.nextSibling
+					}else{
+						//如果没有前一个vnode节点，说明即将挂载的新节点是第一个子节点
+						//这时我们使用容器元素的firstChild作为锚点
+						anchor = container.firstChild
+					}
+					//挂载newVNode
+					patch(null,newVNode,container,anchor)
+				}
+			}	
 		}else{
 			//代码运行到这里，说明新子节点不存在
 			//旧子节点是一组子节点，秩序逐个卸载即可
