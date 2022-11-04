@@ -232,7 +232,12 @@ function createRenderer(options){
 		let newStarVNode = newChildren[newStartIdx]
 		let newEndVNode = newChildren[newEndIdx]
 		while(oldStartIdx <= oldEndIdx && newStartIdx <= newEndIdx){
-			if(oldStartVNode.key === newStartVNode.key){
+			//增加两个分支判断，如果头尾部节点为undefined，则说明该节点已经被处理过了，直接跳到下一个位置
+			if(!oldStartVNode){
+				oldStartVNode = oldChildren[++oldStartIdx]
+			}else if(!oldEndVNode){
+				oldEndVNode = oldChildren[--oldEndIdx]
+			}else if(oldStartVNode.key === newStartVNode.key){
 				//步骤一：oldStartVNode和newStartVNode比较
 				//调用patch函数在oldStartVNode和newStartVNode之间打补丁
 				patch(oldStartVNode,newStartVNode,container)
@@ -273,6 +278,35 @@ function createRenderer(options){
 				const idxInOld = oldChildren.findIndex(
 					node => node.key === newStartVNode.key
 				)
+				//idxInOld 大于 0 说明找到了可复用的节点，并且需要将其对应的真实DOM移动到头部
+				if(idxInOld > 0){
+					//idxInOld位置对应的vnode就是需要移动的节点
+					const vnodeToMove = oldChildren[idxInOld]
+					//不要忘记除移除操作外还需要打补丁
+					patch(vnodeToMove,newStartVNode,container)
+					//将vnodeToMove.el移动到头部节点oldStartVNode.el之前，因此使用后者作为锚点
+					insert(vnodeToMove.el,container，oldStartVNode.el)
+					//由于位置idxInOld处的节点所对应的真实DOM已经移动到了别处，因此将其设置为undefined
+					oldChildren[idxInOld] = undefined
+					//最后更新newStartIdx到下一个位置
+					newStartVNode = newChildren[++newStartIdx]
+				}else{
+					//将newStartVNode作为新节点挂载到头部，使用当前头部节点oldStartVNode.el作为锚点
+					patch(null,newStartVNode,container,oldStartVNode.el)
+				}
+				newStartVNode = newChildren[++newStartIdx]
+			}
+		}
+		//循环结束后检查检索引值的情况
+		if(oldEndIdx < oldStartIdx && newStartIdx <= newEndIdx){
+			//如果满足条件，则说明有新的节点遗留，需要挂载它们
+			for(let i = newStartIdx;i<=newEndIdx;i++){
+				patch(null,newChildren[i],container,oldStartVNode.el)
+			}
+		}else if(newEndIdx < newStartIdx && oldStartIdx <= oldEndIdx){
+			//移除操作
+			for(let i = oldStartIdx;i <= oldEndIdx;i++){
+				unmount(oldChildren[i])
 			}
 		}
 	}
