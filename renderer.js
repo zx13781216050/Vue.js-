@@ -149,6 +149,15 @@ function createRenderer(options){
 				//如果旧vnode存在，则只需要更新Fragment的children即可
 				patchChildren(n1,n2,container)
 			}
+		}else if(typeof type === 'object'){
+			//vnode.type 的值是选项对象，作为组件来处理
+			if(!n1){
+				//挂载组件
+				mountComponent(n2,container,anchor)
+			}else{
+				//更新组件
+				patchComponent(n1,n2,anchor)
+			}
 		}
 	}
 	function render(vnode,container){
@@ -448,8 +457,165 @@ function createRenderer(options){
 			}
 		}
 	}
+	function mountComponent(vnode,container,anchor){
+		//通过vnode获取组件的选项对象，即vnode.type
+		const componentOptions = vnode.type
+		//获取组件的渲染函数render
+		const { render,data,props:propsOption } = componentOptions
+		//调用data函数得到原始数据，并调用reactive函数将其包装为响应式数据
+		const state = reactive(data())
+		//调用resolveProps函数解析除最终的props数据与attrs数据
+		const [props,attrs] = resolveProps(propsOptions,vnode.props)
+		//定义组件实例，一个组件实例本质上就是一个对象，它包含与组件有关的状态信息
+		const instance = {
+			//组件自身的状态数据，即data
+			state,
+			//将解析出的props数据包装为shalloReactive并定义到组件实例上
+			props:shallowReactive(props),
+			//一个布尔值，用来表示组件是否已经被挂载，初始值为false
+			isMounted:false,
+			//组件所渲染的内容,即子树（subTree）
+			subTree:null
+		}
+
+		//将组件实例设置到vnode上，用于后续更新
+		vnode.component = instance
+
+		created && created.all(state)
+		//将组件的render函数调用包装到effect内
+		effect(()=>{
+			//调用组件的渲染函数，获得子树
+			const subTree = render.call(state,state)
+			//检查组件是否已经被挂载
+			if(!instance.isMounted){
+				beforeMount && beforeMount.call(state)
+				//初次挂载，调用patch函数第一个参数传递null
+				patch(null,subTree,container,anchor)
+				//重点：将组件实例的isMounted设置为true，这样当更新发生时就不会再次进行挂载操作
+				//而是会执行更新
+				instance.isMounted = true
+				mounted && mounted.call(state)
+			}else{
+				beforeUpdate && beforeUpdate.call(state)
+				//当isMounted为true时，说明组件已经被挂载，只需要完成自更新即可，
+				//所以在调用patch函数时，第一个参数为组件上一次渲染的子树
+				//意思是，使用新的子树与上一次渲染的子树进行打补丁操作
+				patch(instance.subTree,subTree,container,anchor)
+				updated && updated.call(state)
+			}
+			//更新组件实例的子树
+			instance.subTree = subTree
+		},{
+			//指定该副作用函数的调度器为queueJob即可
+			scheduler:queueJob
+		})
+	}
+	//resolveProps函数用于解析组件props和attrs数据
+	function resolveProps(options,propsData){
+		const props = {}
+		const attrs = {}
+		//遍历为组件传递的props数据
+		for(const key in propsData){
+			if(key in options){
+				//如果为组件传递的props数据在组件自身的props选项中有定义，则将其视为合法的props
+				props[key] = propsData[key]
+			}else{
+				//否则将其作为attrs
+				attrs[key] = propsData[key]
+			}
+		}
+		//最后返回props与attrs数据
+		return [props,attrs]
+	}
+	function patchComponent(n1,n2,anchor){
+		//获取组件实例，即n1.component,同时让新的组件虚拟节点n2.component也指向组件实例
+		const instance = (n2.component = n1.component)
+		//获取当前的props数据
+		const {props} = instance
+		//调用hasPropsChanged检测为子组件传递的props是否发生变化,如果没有变化，则不需要更新
+		if(hasPropsChanged(n1.props,n2.props)){
+			//调用resolveProps函数重新获取props数据
+			const [nextProps] = resolveProps(n2.type.props,n2.props)
+			//更新props
+			for(const k in nextProps){
+				props[k] = nextProps[k]
+			}
+			//删除不存在的props
+			for(const k in props){
+				if(!k in nextProps) delete props[k]
+			}
+		}
+	}
+	function hasPropsChanged(prevProps,nextProps){
+		const nextKeys = Object.keys(nextProps)
+		//如果新旧props的数量变了，则说明有变化
+		if(nextKeys.length !== Object.keys(prevProps).length){
+			return true
+		}
+		for(let i = 0;i<nextKeys.length;i++){
+			const key = nextKeys[i]
+			//有不相等的props，则说明有变化
+			if(nextProps[key] !== prevProps[key]) return true
+		}
+		return false
+	}
+	
 	return {
 		render
 	}
 }
 
+
+const MyComponent = {
+	//组件名称，可选
+	name:'MyComponent',
+	//用data函数来定义组件自身的状态
+	data(){
+		return {
+			foo:'hello world'
+		}
+	}
+	//组件的渲染函数，其返回值必须为虚拟DOM
+	render(){
+		//返回虚拟DOM
+		return{
+			type:'div',
+			children:'foo的值是：${this.foo}' //在渲染函数内使用组件状态
+		}
+	}
+}
+//用来描述组件的VNode对象，type属性值为组件的选项对象
+const CompVNode = {
+	type:MyComponent
+}
+//调用渲染器来渲染组件
+renderer.render(CompVNode,document.querySelector('#app'))
+
+//任务缓存队列，用一个Set数据结构来表示，这样就可以自动对任务进行去重
+const queue = new Set()
+//一个标志，代表是否正在刷新任务队列
+let isFlushing = false
+//创建一个立即resolve的Promise实例
+const p = Promise.resolve()
+
+//调度器的主要函数，用来将一个任务添加到缓冲队列中，并开始刷新队列
+function queueJob(job){
+	//将job添加到任务队列queue中
+	queue.add(job)
+	//如果还没有开始刷新队列，则刷新之
+	if(!isFlushing){
+		//将该标志设置为true以避免重新刷新
+		isFlushing = true
+		//在微任务中刷新缓冲队列
+		p.then(()=>{
+			try{
+				//执行任务队列中的任务
+				queue.forEach(job => job())
+			}finally{
+				//重置状态
+				isFlushing = false
+				queue.length = 0
+			}
+		})
+	}
+}
