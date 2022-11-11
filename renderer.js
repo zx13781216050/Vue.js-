@@ -1,3 +1,9 @@
+//全局变量，存储当前正在被初始化的组件实例
+let currentInstance = null
+//该方法接收组件实例作为参数，并将该实例设置为currentInstance
+function setCurrentInstance(instance){
+	cunrrentInstance = instance
+}
 //在创建renderer时传入配置项
 const renderer = createRenderer({
 	//用于创建元素
@@ -461,11 +467,14 @@ function createRenderer(options){
 		//通过vnode获取组件的选项对象，即vnode.type
 		const componentOptions = vnode.type
 		//获取组件的渲染函数render
-		const { render,data,props:propsOption } = componentOptions
+		const { render,data,props:propsOption,setup } = componentOptions
 		//调用data函数得到原始数据，并调用reactive函数将其包装为响应式数据
 		const state = reactive(data())
 		//调用resolveProps函数解析除最终的props数据与attrs数据
 		const [props,attrs] = resolveProps(propsOptions,vnode.props)
+		//直接使用编译好的vnode.children对象作为slots对象即可
+		const slots = vnode.children || {}
+		
 		//定义组件实例，一个组件实例本质上就是一个对象，它包含与组件有关的状态信息
 		const instance = {
 			//组件自身的状态数据，即data
@@ -475,13 +484,88 @@ function createRenderer(options){
 			//一个布尔值，用来表示组件是否已经被挂载，初始值为false
 			isMounted:false,
 			//组件所渲染的内容,即子树（subTree）
-			subTree:null
+			subTree:null,
+			//将插槽添加到组件实例上
+			slots,
+			//在组件实例中添加mounted数组，用来存储通过onMounted函数注册的生命周期钩子函数
+			mounted:[]
 		}
 
+		//定义emit函数，它接受两个参数
+		//event:事件名称
+		//payload:传递给事件处理函数的参数
+		function emit(event,...payload){
+			//根据约定对事件名称进行处理，例如change --> onChange
+			const eventName = `on${event[0].toUpperCse()+event.slice(1)}`
+			//根据处理后的事件名称去props中寻找对应的事件处理函数
+			const handler = instance.props[eventName]
+			if(handler){
+				//调用事件处理函数并传递参数
+				handler(...payload)
+			}else{
+				console.log('事件不存在')
+			}
+		}
+		
+		const setupContext = { attrs,emit,slots}
+		//在调用seup函数前，设置当前组件实例
+		setCurrentInstance(instance)
+		//调用setup函数，将只读版本的props作为第一个参数传递，避免用户意外地修改props的值，
+		//将setupContext作为第二个参数传递
+		const setupResult = setup(shallowReadonly(instance.props),setupContext)
+		//在setup函数执行完毕后，重置当前组件实例
+		setCurrentInstance(null)
+		//setupState用来存储有setup返回的数据
+		let setupState = null
+		//如果setup函数的返回值是函数，则将其作为渲染函数
+		if(typeof setupResult === 'function'){
+			//报告冲突
+			if(render) console.error('setup函数返回渲染函数，render选项将被忽略')
+			//将setupResult函数作为渲染函数
+			render = setupResult
+		}else{
+			//如果setup的返回值不是函数，作为数据状态赋值给setupState
+			setupState = setupResult
+		}
+		
 		//将组件实例设置到vnode上，用于后续更新
 		vnode.component = instance
 
-		created && created.all(state)
+		//创建渲染上下文对象，本质上是组件实例的代理
+		const renderContext = new Proxy(instance,{
+			get(t,k,r){
+				//取得组件自身状态与props数据
+				const { state,props,slots }= t
+				//当k的值为$slots时，直接返回组件实例上的slots
+				if(k === '$slots') return slots
+				//先尝试读取自身状态数据
+				if(state && k in state){
+					return state[k]
+				}else if(k in props){//如果组件自身没有该数据，则尝试从props中读取
+					return props[k]
+				}else if(setupState && k in setupState){
+					//渲染上下文需要增加对setupState的支持
+					return setupState[k]
+				}else{
+					console.error('不存在')
+				}
+			},
+			set(t,k,v,r){
+				const {state,props} = typeof
+				if(state && k in state){
+					state[k] = v
+				}else if(k in props){
+					props[k] = v
+				}else if(setupState && k in setupState){
+					//渲染上下文需要增加对setupState的支持
+					setupState[k] = v
+				}else{
+					console.error('不存在')
+				}
+			}
+		})
+		//生命周期函数调用时要绑定渲染上下文对象
+		created && created.all(renderContext)
 		//将组件的render函数调用包装到effect内
 		effect(()=>{
 			//调用组件的渲染函数，获得子树
@@ -494,7 +578,8 @@ function createRenderer(options){
 				//重点：将组件实例的isMounted设置为true，这样当更新发生时就不会再次进行挂载操作
 				//而是会执行更新
 				instance.isMounted = true
-				mounted && mounted.call(state)
+				//遍历instance.mounted数组并逐个执行即可
+				instance.mounted && instance.mounted.forEach(hook => hook.call(renderContext))
 			}else{
 				beforeUpdate && beforeUpdate.call(state)
 				//当isMounted为true时，说明组件已经被挂载，只需要完成自更新即可，
@@ -516,7 +601,8 @@ function createRenderer(options){
 		const attrs = {}
 		//遍历为组件传递的props数据
 		for(const key in propsData){
-			if(key in options){
+			//以字符串on开头的props，无论是否显式地声明，都将其添加到props数据中，而不是attrs中
+			if(key in options || key.starWith('on')){
 				//如果为组件传递的props数据在组件自身的props选项中有定义，则将其视为合法的props
 				props[key] = propsData[key]
 			}else{
@@ -558,6 +644,14 @@ function createRenderer(options){
 			if(nextProps[key] !== prevProps[key]) return true
 		}
 		return false
+	}
+	function onMounted(fn){
+		if(currentInstance){
+			//将生命周期函数添加到instance.mounted数组中
+			currentInstance.mounted.push(fn)
+		}else{
+			console.error('onMounted函数只能在setup中调用')
+		}
 	}
 	
 	return {
