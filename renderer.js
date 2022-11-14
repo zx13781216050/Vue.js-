@@ -116,7 +116,7 @@ function createRenderer(options){
 		//调用insert函数将元素插入到容器内
 		insert(el,container,anchor)
 	}
-	function patch(n1,n2,container){
+	function patch(n1,n2,container,anchor){
 		//如果n1存在，则对比n1和n2的类型
 		if(n1&&n1.type !== n2.type){
 			//如果新旧vnode的类型不同，则直接将旧vnode卸载
@@ -155,11 +155,19 @@ function createRenderer(options){
 				//如果旧vnode存在，则只需要更新Fragment的children即可
 				patchChildren(n1,n2,container)
 			}
-		}else if(typeof type === 'object'){
+		}else if(//type是对象 -->有状态组件
+			//type是函数 -->函数式组件
+			typeof type === 'object' || typeof type === 'function'){
 			//vnode.type 的值是选项对象，作为组件来处理
 			if(!n1){
-				//挂载组件
-				mountComponent(n2,container,anchor)
+				//如果该组件已经被KeepAlive，则不会重新挂载它，二是会调用_activate来激活它
+				if(n2.keptAlive){
+					n2.keepAliveInstance._activate(n2,container,anchor)
+				}else{
+					//挂载组件
+					mountComponent(n2,container,anchor)
+				}
+				
 			}else{
 				//更新组件
 				patchComponent(n1,n2,anchor)
@@ -178,17 +186,6 @@ function createRenderer(options){
 		}
 		//把vnode存储到conainer._vnode下，即后续渲染中的旧vnode
 		container._vnode = vnode
-	}
-	function unmount(vnode){
-		//在卸载时，如果卸载的vnode类型为Fragment,则只需要卸载其children
-		if(vnode.type === Fragment){
-			vnode.children.forEach(c => unmount(c))
-			return
-		}
-		//获取el的父元素
-		const parent = vnode.el.parentNode
-		//调用removeChild移除元素
-		if(parent) parent.removeChild(vnode.el)
 	}
 	function patchElement(n1,n2){
 		const el = n2.el = n1.el
@@ -464,8 +461,17 @@ function createRenderer(options){
 		}
 	}
 	function mountComponent(vnode,container,anchor){
+		//检查是否是函数式组件
+		const isFunctional = typeof vnode.type === 'function'
 		//通过vnode获取组件的选项对象，即vnode.type
-		const componentOptions = vnode.type
+		let componentOptions = vnode.type
+		if(isFunctional){
+			//如果是函数式组件，则将vnode.type作为渲染函数，将vnode.type.props作为props选项定义即可
+			componentOptions = {
+				render:vnode.type,
+				props: vnode.type.props
+			}
+		}
 		//获取组件的渲染函数render
 		const { render,data,props:propsOption,setup } = componentOptions
 		//调用data函数得到原始数据，并调用reactive函数将其包装为响应式数据
@@ -488,7 +494,23 @@ function createRenderer(options){
 			//将插槽添加到组件实例上
 			slots,
 			//在组件实例中添加mounted数组，用来存储通过onMounted函数注册的生命周期钩子函数
-			mounted:[]
+			mounted:[],
+			//只有KeepAlive组件的实例下会有keepAliveCtx属性
+			keepAliveCtx:null
+		}
+
+		//检查当前要挂载的组件是否是KeepAlive组件
+		const isKeepAlive = vnode.type.__isKeepAlive
+		if(isKeepAlive){
+			//在KeepAlive组件实例上添加keepAliveCtx对象
+			instance.keepAliveCtx = {
+				//move函数用来移动一段vnode
+				move(vnode,container,anchor){
+					//本质上将组件渲染的内容移动到指定容器中，即隐藏容器中
+					insert(vnode.component.subTree.el,container,anchor)
+				},
+				createElement
+			}
 		}
 
 		//定义emit函数，它接受两个参数
@@ -659,6 +681,29 @@ function createRenderer(options){
 	}
 }
 
+function unmount(vnode){
+	//在卸载时，如果卸载的vnode类型为Fragment,则只需要卸载其children
+	if(vnode.type === Fragment){
+		vnode.children.forEach(c => unmount(c))
+		return
+	}else if(typeof vnode.type == 'object'){
+		//vnode.shouldKeepAlive是一个布尔值，用来标识该组件是否应该被KeepAlive
+		if(vnode.shouldKeepAlive){
+			//对于需要被KeepAlive的组件，我们不应该真的卸载它，而应调用该组件的父组件，
+			//即KeepAlive组件的_deActivate函数使其失活
+			vnode.keepAliveInstance._deActivate(vnode)
+		}else{
+			//对于组件的卸载，本质上是要卸载组件所渲染的内容，即subTree
+			unmount(vnode.component.subTree)
+		}
+		
+		return
+	}
+	//获取el的父元素
+	const parent = vnode.el.parentNode
+	//调用removeChild移除元素
+	if(parent) parent.removeChild(vnode.el)
+}
 
 const MyComponent = {
 	//组件名称，可选
