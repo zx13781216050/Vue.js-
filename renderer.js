@@ -113,8 +113,18 @@ function createRenderer(options){
 				patchProps(el,key,null,vnode.props[key])
 			}
 		}
+		//判断一个VNode是否需要过渡
+		const needTransition = vnode.needTransition
+		if(needTransition){
+			//调用transition.beforeEnter钩子，并将DOM元素作为参数传递
+			vnode.transition.beforeEnter(el)
+		}
 		//调用insert函数将元素插入到容器内
 		insert(el,container,anchor)
+		if(needTransition){
+			//调用transitio.enter钩子函数，并将DOM元素作为参数传递
+			vnode.transition.enter(el)
+		}
 	}
 	function patch(n1,n2,container,anchor){
 		//如果n1存在，则对比n1和n2的类型
@@ -155,6 +165,15 @@ function createRenderer(options){
 				//如果旧vnode存在，则只需要更新Fragment的children即可
 				patchChildren(n1,n2,container)
 			}
+		}else if(typeof type === 'object' && type.__isTeleport){
+			//组件选项中如果存在__isTeleport标识，则它是Teleport组件
+			//调用Teleport组件选项中的process函数将控制权交接出去
+			//传递给process函数的第五个参数是渲染器的一些内部方法
+			type.process(n1,n2,container,anchor,{
+				patch,patchChildren,unmount,move(vnode,container,anchor){
+					insert(vnode.component ? vnode.component.subTree.el : vnode.el,container,anchor)
+				}
+			})
 		}else if(//type是对象 -->有状态组件
 			//type是函数 -->函数式组件
 			typeof type === 'object' || typeof type === 'function'){
@@ -682,6 +701,8 @@ function createRenderer(options){
 }
 
 function unmount(vnode){
+	//判断VNode是否需要过渡处理
+	const needTransition = vnode.transition
 	//在卸载时，如果卸载的vnode类型为Fragment,则只需要卸载其children
 	if(vnode.type === Fragment){
 		vnode.children.forEach(c => unmount(c))
@@ -702,7 +723,18 @@ function unmount(vnode){
 	//获取el的父元素
 	const parent = vnode.el.parentNode
 	//调用removeChild移除元素
-	if(parent) parent.removeChild(vnode.el)
+	if(parent){
+		//将卸载动作封装到performRemove函数中
+		const performRemove = () => parent.removeChild(vnode.el)
+		if(needTransition){
+			//如果需要过渡处理，则调用transition.leave钩子
+			//同时将DOM元素和performRemove函数作为参数传递
+			vnode.transition.leave(vnode.el,performRemove)
+		}else{
+			//如果不需要过渡处理，则直接执行卸载操作
+			performRemove()
+		}
+	}
 }
 
 const MyComponent = {
