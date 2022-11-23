@@ -16,7 +16,7 @@ function parse(str){
 		const parent = elementStack[elementStack.length - 1]
 		//当前扫描的Token
 		const t = tokens[0]
-		swith(t.type){
+		switch(t.type){
 			case 'tag':
 				//	如果当前Token是开始标签，则创建Element类型的AST节点
 				const elementNode = {
@@ -36,7 +36,16 @@ function parse(str){
 					content:t.content
 				}
 				//将其添加到父节点的children中
-				parent.children.push()
+				parent.children.push(textNode)
+				break
+			case 'tagEnd':
+				//遇到结束标签，将栈顶节点弹出
+				elementStack.pop()
+				break
 		}
+		//消费已经扫描过的token
+		tokens.shift()
 	}
+	//最后返回AST
+	return root
 }
