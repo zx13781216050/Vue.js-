@@ -49,7 +49,8 @@ function parseChilren(context,ancestors){
 					node = parseCDATA(context,ancestors)
 				}
 			}else if(source[1] === '/'){
-
+				//状态机遭遇了闭合标签，此时应该抛出错误，因为它缺少与之对应的开始标签
+				console.error('无效的技术标签')
 			}else if(/[a-z]/i.test(source[1])){
 				//标签
 				node = parseElement(context,ancestors)
@@ -77,10 +78,32 @@ function parseChilren(context,ancestors){
 function parseElement(){
 	//解析开始标签
 	const element = parseTag()
+	if(element.isSelfClosing) return element
+
+	ancestors.push(element)
 	//这里递归地调用parseChildren函数进行<div>标签子节点的解析
-	element.children = parseChildren()
-	//解析结束标签
-	parseEndTag()
+	element.children = parseChildren(context,ancestors)
+	ancestors.pop()
+
+	if(context.source.startsWith(`</${element.tag}`)){
+		//解析结束标签
+		parseEndTag()
+	}else{
+		//缺少闭合标签
+		console.error(`${element.tag} 标签缺少闭合标签`)
+	}
 
 	return element
+}
+
+function isEnd(context,ancestors){
+	//当模板内容解析完毕后，停止
+	if(!context.source) return true
+	//与父级节点栈内中的所有节点做比较
+	for(let i = ancestors.length - 1;i >= 0;--i){
+		//只要栈中存在与当前结束标签同名的节点，就停止状态机
+		if(context.source.startsWith(`</${ancestors[i].tag}`)){
+			return true
+		}
+	}
 }
